@@ -39,3 +39,18 @@ The GitHub action will automatically build the ASIC files using [OpenLane](https
   - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
   - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
   - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
+
+### Quick Start Journal (for agneya)
+- remember to `wsl --shutdown`
+- to generate a .vcd, instantiate the virtual python environment `source venv/bin/activate` IN WSL and run `make -B` in the test folder
+
+- if starting a new project, open WSL, run `python -m venv venv` in the test folder. Then, `source venv/bin/activate` to start the virtual environment. Then, `pip install -r requirements.txt` to install the necessary packages.
+
+- start wsl
+- python3 -m venv venv (create virtual environment. MUST BE MADE IN WSL)
+- source venv/bin/activate (activate virtual environment)
+- pip install -r requirements.txt (install necessary packages)
+- change the module name in tb.v
+- make -B (run the testbench)
+
+- spi is main project, template is the buildable project

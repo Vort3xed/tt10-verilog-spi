@@ -3,38 +3,110 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
-
+from cocotb.triggers import ClockCycles, Timer, RisingEdge, FallingEdge
 
 @cocotb.test()
-async def test_project(dut):
-    dut._log.info("Start")
+async def test_qspi_matrix_mult(dut):
+    dut._log.info("Starting QSPI matrix multiplication test")
 
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, units="us")
+    # Create system clock (100 MHz)
+    clock = Clock(dut.clk, 10, units="ns")
     cocotb.start_soon(clock.start())
 
-    # Reset
-    dut._log.info("Reset")
-    dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
+    # Initialize QSPI signals
+    dut.ui_in.value = 0x00  # All inputs low
+    dut.ena.value = 1       # Enable the design
+
+    # Apply reset
+    dut._log.info("Applying reset")
     dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 10)
+    await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 5)
 
-    dut._log.info("Test project behavior")
-
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
-
-    # Wait for one clock cycle to see the output values
-    await ClockCycles(dut.clk, 1)
-
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
-
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    # Test matrices
+    matrix_a = [1, 2, 3, 4]  # A = [[1, 2], [3, 4]]
+    matrix_b = [5, 6, 7, 8]  # B = [[5, 6], [7, 8]]
+    
+    # Expected results
+    expected_c00 = 1*5 + 2*7  # = 19
+    expected_c01 = 1*6 + 2*8  # = 22
+    expected_c10 = 3*5 + 4*7  # = 43
+    expected_c11 = 3*6 + 4*8  # = 50
+    expected = [expected_c00, expected_c01, expected_c10, expected_c11]
+    
+    # Start QSPI transaction
+    dut._log.info("Starting QSPI transaction")
+    
+    # Set CS active (low)
+    dut.ui_in.value = 0x00
+    await ClockCycles(dut.clk, 2)
+    
+    # Helper function to send a byte over QSPI (4 bits at a time)
+    async def send_byte_qspi(value):
+        # Send high nibble
+        high_nibble = (value >> 4) & 0xF
+        dut.ui_in.value = high_nibble  # Set data bits (low 4 bits)
+        await ClockCycles(dut.clk, 1)
+        dut.ui_in.value = high_nibble | 0x20  # Set clock high
+        await ClockCycles(dut.clk, 1)
+        dut.ui_in.value = high_nibble  # Set clock low
+        await ClockCycles(dut.clk, 1)
+        
+        # Send low nibble
+        low_nibble = value & 0xF
+        dut.ui_in.value = low_nibble  # Set data bits
+        await ClockCycles(dut.clk, 1)
+        dut.ui_in.value = low_nibble | 0x20  # Set clock high
+        await ClockCycles(dut.clk, 1)
+        dut.ui_in.value = low_nibble  # Set clock low
+        await ClockCycles(dut.clk, 1)
+    
+    # Helper function to receive a byte over QSPI
+    async def receive_byte_qspi():
+        # Receive high nibble
+        dut.ui_in.value = 0x20  # Clock high with CS low
+        await ClockCycles(dut.clk, 2)
+        high_nibble = dut.uo_out.value & 0xF
+        dut.ui_in.value = 0x00  # Clock low
+        await ClockCycles(dut.clk, 2)
+        
+        # Receive low nibble
+        dut.ui_in.value = 0x20  # Clock high
+        await ClockCycles(dut.clk, 2)
+        low_nibble = dut.uo_out.value & 0xF
+        dut.ui_in.value = 0x00  # Clock low
+        await ClockCycles(dut.clk, 2)
+        
+        return (high_nibble << 4) | low_nibble
+    
+    # Send matrix A
+    dut._log.info("Sending matrix A")
+    for value in matrix_a:
+        await send_byte_qspi(value)
+    
+    # Send matrix B
+    dut._log.info("Sending matrix B")
+    for value in matrix_b:
+        await send_byte_qspi(value)
+    
+    # Wait for computation
+    await ClockCycles(dut.clk, 5)
+    
+    # Read results
+    results = []
+    dut._log.info("Reading results")
+    for i in range(4):
+        value = await receive_byte_qspi()
+        results.append(value)
+        dut._log.info(f"Result {i}: {value}")
+    
+    # Release CS
+    dut.ui_in.value = 0x10  # Set CS high
+    await ClockCycles(dut.clk, 5)
+    
+    # Verify results
+    for i, (expected_val, actual_val) in enumerate(zip(expected, results)):
+        assert expected_val == actual_val, f"Mismatch at index {i}: expected {expected_val}, got {actual_val}"
+    
+    dut._log.info("QSPI matrix multiplication test passed!")
