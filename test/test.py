@@ -29,10 +29,10 @@ async def test_qspi_matrix_mult(dut):
     matrix_b = [5, 6, 7, 8]  # B = [[5, 6], [7, 8]]
     
     # Expected results
-    expected_c00 = 1*5 + 2*7  # = 19
-    expected_c01 = 1*6 + 2*8  # = 22
-    expected_c10 = 3*5 + 4*7  # = 43
-    expected_c11 = 3*6 + 4*8  # = 50
+    expected_c00 = 1*5 + 2*7  # 19
+    expected_c01 = 1*6 + 2*8  # 22
+    expected_c10 = 3*5 + 4*7  # 43
+    expected_c11 = 3*6 + 4*8  # 50
     expected = [expected_c00, expected_c01, expected_c10, expected_c11]
     
     # Start QSPI transaction
@@ -64,19 +64,22 @@ async def test_qspi_matrix_mult(dut):
     
     # Helper function to receive a byte over QSPI
     async def receive_byte_qspi():
-        # Receive high nibble
+        # Set clock high first
         dut.ui_in.value = 0x20  # Clock high with CS low
         await ClockCycles(dut.clk, 2)
-        high_nibble = dut.uo_out.value & 0xF
+        # Now set clock low to trigger the falling edge response
         dut.ui_in.value = 0x00  # Clock low
         await ClockCycles(dut.clk, 2)
+        # Read high nibble after falling edge
+        high_nibble = dut.uo_out.value & 0xF
         
-        # Receive low nibble
+        # Repeat for low nibble
         dut.ui_in.value = 0x20  # Clock high
         await ClockCycles(dut.clk, 2)
-        low_nibble = dut.uo_out.value & 0xF
         dut.ui_in.value = 0x00  # Clock low
         await ClockCycles(dut.clk, 2)
+        # Read low nibble after falling edge
+        low_nibble = dut.uo_out.value & 0xF
         
         return (high_nibble << 4) | low_nibble
     
@@ -100,6 +103,8 @@ async def test_qspi_matrix_mult(dut):
         value = await receive_byte_qspi()
         results.append(value)
         dut._log.info(f"Result {i}: {value}")
+
+    print(f"results array {results}")
     
     # Release CS
     dut.ui_in.value = 0x10  # Set CS high
