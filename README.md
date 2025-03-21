@@ -54,3 +54,26 @@ The GitHub action will automatically build the ASIC files using [OpenLane](https
 - make -B (run the testbench)
 
 - spi is main project, template is the buildable project
+
+- uart_to_spi.v is the module file i put into vivado
+
+- below code im supposed to put into my project.v file?
+```
+uart_to_spi uart (
+        .clk(clock),
+        .resetn(porb_h),        // "_h" is only valid for FPGA!
+
+        .ser_tx(ser_tx_out),
+        .ser_rx(ser_rx_in),
+
+        .spi_sck(mprj_io_in[4]),
+        .spi_csb(mprj_io_in[3]),
+        .spi_sdo(mprj_io_out[1]),
+        .spi_sdi(mprj_io_in[2]),
+
+        .mgmt_uart_rx(mprj_io_in[5]),
+        .mgmt_uart_tx(mprj_io_out[6]),
+
+        .mgmt_uart_enabled(uart_enabled)
+  );
+```
