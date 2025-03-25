@@ -79,3 +79,6 @@ uart_to_spi uart (
         .mgmt_uart_enabled(uart_enabled)
   );
 ```
+
+### OPERATION SERIAL TO USB TO UART TO SPI 
+- Top arty file recieves data from 
