@@ -23,7 +23,7 @@ module top_arty_matrix_mult (
         
         // SPI connections to matrix multiplier
         .spi_csb(ui_in[4]),         // Chip select
-        .spi_clk(ui_in[5]),         // SPI clock
+        .spi_sck(ui_in[5]),         // SPI clock - FIXED: was spi_clk
         .spi_sdi(ui_in[0]),         // SPI data in (only using one bit since standard SPI)
         .spi_sdo(uo_out[0]),        // SPI data out (only using one bit since standard SPI)
         

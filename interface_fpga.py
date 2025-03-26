@@ -1,15 +1,9 @@
-import serial
 import time
 import numpy as np
 
 class UARTMatrixMultiplier:
     def __init__(self, com_port=None, baud_rate=96000):
-        """Initialize the UART connection to the ARTY A7 board.
-        
-        Args:
-            com_port: COM port for the ARTY A7 (e.g., 'COM3' on Windows)
-            baud_rate: Must match the UART baudrate in the FPGA design (96kbps default)
-        """
+        """Initialize the UART connection to the ARTY A7 board."""
         if com_port is None:
             # List available ports to help with selection
             import serial.tools.list_ports
