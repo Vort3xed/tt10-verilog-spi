@@ -5,13 +5,18 @@
 SIM ?= icarus
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v
+ROOT_DIR = $(PWD)/..
+
+# List all required source files
+PROJECT_SOURCES = project.v top_arty_matrix_mult.v tt_generic_wrapper.v
+ADDITIONAL_SOURCES = $(ROOT_DIR)/uart_to_qspi.v
 
 ifneq ($(GATES),yes)
 
 # RTL simulation:
 SIM_BUILD				= sim_build/rtl
 VERILOG_SOURCES += $(addprefix $(SRC_DIR)/,$(PROJECT_SOURCES))
+VERILOG_SOURCES += $(ADDITIONAL_SOURCES)
 
 else
 
