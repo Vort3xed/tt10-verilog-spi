@@ -49,3 +49,37 @@ async def test_full_matrix_mult_system(dut):
     
     # Allow time for computation and UART response
     await ClockCycles(dut.clk, 10000)
+
+    # Function to receive a byte over UART
+    async def receive_uart_byte():
+        # Wait for start bit (0)
+        while dut.uart_tx.value == 1:
+            await ClockCycles(dut.clk, 10)
+        
+        # Wait for middle of start bit
+        await ClockCycles(dut.clk, 521) # Half bit time
+        
+        byte = 0
+        # Read data bits (LSB first)
+        for i in range(8):
+            await ClockCycles(dut.clk, 1042) # Full bit time
+            bit = dut.uart_tx.value
+            byte |= (bit << i)
+        
+        # Wait for stop bit
+        await ClockCycles(dut.clk, 1042)
+        
+        return byte
+
+    # Receive the result matrix
+    result = []
+    for _ in range(4):
+        result.append(await receive_uart_byte())
+
+    # Print and verify result
+    print(f"Result matrix: {result}")
+
+    # Expected result for [[1,2],[3,4]] × [[5,6],[7,8]] is [[19,22],[43,50]]
+    expected = [19, 22, 43, 50]
+    for i in range(4):
+        assert result[i] == expected[i], f"Result mismatch at position {i}: got {result[i]}, expected {expected[i]}"
