@@ -48,7 +48,7 @@ async def test_full_matrix_mult_system(dut):
         await send_uart_byte(value)
     
     # Allow time for computation and UART response
-    await ClockCycles(dut.clk, 10000)
+    await ClockCycles(dut.clk, 50000)
 
     # Function to receive a byte over UART
     async def receive_uart_byte():

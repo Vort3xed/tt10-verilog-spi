@@ -83,3 +83,4 @@ uart_to_spi uart (
 ### OPERATION SERIAL TO USB TO UART TO SPI 
 - Top arty file recieves data from the computer via USB, sends it to the UART module, which sends it to the SPI module, which sends it to the FPGA. The FPGA then sends the data to the SPI module, which sends it to the UART module, which sends it to the Top arty file, which sends it to the computer via USB.
 - to run the `interface_fpga.py` file, i just set my python interpreter to the pythonw.exe file in the scripts folder. i have no idea what this does. but somehow it worked. do on windows, not wsl instance.
+- project.qspi_io_out  produces the right stream of numbers. computation is being done correctly here.

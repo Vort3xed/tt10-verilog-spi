@@ -28,6 +28,7 @@ module tt_um_qspi_matrix_mult (
   // Output enable (active during transmission)
   reg [3:0] qspi_io_oe;
   assign uio_oe = {4'b0000, qspi_io_oe};
+  assign uio_out = 8'b0;  // Not using these outputs
   
   // Internal state definitions
   localparam STATE_IDLE = 3'd0,
@@ -38,16 +39,19 @@ module tt_um_qspi_matrix_mult (
 
   // Registers for state machine and data
   reg [2:0] state;
-  reg [2:0] counter;
-  reg [2:0] nibble_counter; // Tracks which 4-bit part we're processing
+  reg [2:0] byte_counter;  // Counts which value we're on (0-3 for each matrix)
+  reg nibble_flag;         // 0 = high nibble, 1 = low nibble
   
   // Matrix storage (8-bit values)
-  reg [7:0] A0, A1, A2, A3;   // Elements for matrix A
-  reg [7:0] B0, B1, B2, B3;   // Elements for matrix B
-  reg [15:0] C00, C01, C10, C11; // Full-precision intermediate products
+  reg [7:0] A[0:3];        // Elements for matrix A: A[0]=A0, A[1]=A1, etc.
+  reg [7:0] B[0:3];        // Elements for matrix B
+  reg [7:0] C[0:3];        // Elements for result matrix C
   
-  // Temporary registers for storing half-bytes during input
-  reg [3:0] nibble_buffer;
+  // Temporary register for storing high nibble
+  reg [3:0] high_nibble;
+  
+  // Output control
+  reg [1:0] output_counter;  // Which result to output
   
   // QSPI clock edge detection
   reg qspi_clk_prev;
@@ -58,206 +62,156 @@ module tt_um_qspi_matrix_mult (
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       state <= STATE_IDLE;
-      counter <= 0;
-      nibble_counter <= 0;
-      A0 <= 0; A1 <= 0; A2 <= 0; A3 <= 0;
-      B0 <= 0; B1 <= 0; B2 <= 0; B3 <= 0;
-      C00 <= 0; C01 <= 0; C10 <= 0; C11 <= 0;
+      byte_counter <= 0;
+      nibble_flag <= 0;
+      high_nibble <= 0;
+      output_counter <= 0;
+      
+      // Initialize matrices
+      A[0] <= 0; A[1] <= 0; A[2] <= 0; A[3] <= 0;
+      B[0] <= 0; B[1] <= 0; B[2] <= 0; B[3] <= 0;
+      C[0] <= 0; C[1] <= 0; C[2] <= 0; C[3] <= 0;
+      
       qspi_io_out <= 4'b0000;
       qspi_io_oe <= 4'b0000;
       qspi_clk_prev <= 0;
-      nibble_buffer <= 0;
     end else begin
       // Update previous clock for edge detection
       qspi_clk_prev <= qspi_clk;
       
-      // Default OE to off unless explicitly set
+      // Default settings
       qspi_io_oe <= 4'b0000;
       
       case (state)
-        // Wait for CS to go low to begin transaction
         STATE_IDLE: begin
+          // Reset counters when entering IDLE
+          byte_counter <= 0;
+          nibble_flag <= 0;
+          
+          // Wait for chip select to be asserted (active low)
           if (!qspi_cs_n) begin
             state <= STATE_READ_A;
-            counter <= 0;
-            nibble_counter <= 0;
+            $display("STATE_IDLE: CS asserted, moving to STATE_READ_A");
           end
         end
         
-        // Read matrix A (4 bits at a time)
         STATE_READ_A: begin
           if (qspi_clk_posedge) begin
-            case (counter)
-              0: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  A0 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
+            if (!nibble_flag) begin
+              // Store high nibble
+              high_nibble <= qspi_io_in;
+              nibble_flag <= 1;
+              $display("STATE_READ_A: High nibble %h for A[%d]", qspi_io_in, byte_counter);
+            end else begin
+              // Complete byte with low nibble and store
+              A[byte_counter] <= {high_nibble, qspi_io_in};
+              nibble_flag <= 0;
+              $display("STATE_READ_A: Stored A[%d] = %h", byte_counter, {high_nibble, qspi_io_in});
+              
+              // Move to next byte or state
+              if (byte_counter == 3) begin
+                byte_counter <= 0;
+                state <= STATE_READ_B;
+                $display("STATE_READ_A: Matrix A complete, moving to STATE_READ_B");
+              end else begin
+                byte_counter <= byte_counter + 1;
               end
-              1: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  A1 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              2: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  A2 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              3: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  A3 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= 0;
-                  state <= STATE_READ_B;
-                end
-              end
-            endcase
+            end
+          end
+          
+          // If CS goes inactive, return to IDLE
+          if (qspi_cs_n) begin
+            state <= STATE_IDLE;
+            $display("STATE_READ_A: CS deasserted, moving to STATE_IDLE");
           end
         end
         
-        // Read matrix B (4 bits at a time)
         STATE_READ_B: begin
           if (qspi_clk_posedge) begin
-            case (counter)
-              0: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  B0 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
+            if (!nibble_flag) begin
+              // Store high nibble
+              high_nibble <= qspi_io_in;
+              nibble_flag <= 1;
+              $display("STATE_READ_B: High nibble %h for B[%d]", qspi_io_in, byte_counter);
+            end else begin
+              // Complete byte with low nibble and store
+              B[byte_counter] <= {high_nibble, qspi_io_in};
+              nibble_flag <= 0;
+              $display("STATE_READ_B: Stored B[%d] = %h", byte_counter, {high_nibble, qspi_io_in});
+              
+              // Move to next byte or state
+              if (byte_counter == 3) begin
+                byte_counter <= 0;
+                state <= STATE_COMPUTE;
+                $display("STATE_READ_B: Matrix B complete, moving to STATE_COMPUTE");
+              end else begin
+                byte_counter <= byte_counter + 1;
               end
-              1: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  B1 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              2: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  B2 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              3: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  B3 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= 0;
-                  state <= STATE_COMPUTE;
-                end
-              end
-            endcase
+            end
+          end
+          
+          // If CS goes inactive, return to IDLE
+          if (qspi_cs_n) begin
+            state <= STATE_IDLE;
+            $display("STATE_READ_B: CS deasserted, moving to STATE_IDLE");
           end
         end
         
-        // Compute matrix multiplication
         STATE_COMPUTE: begin
-          // Standard 2x2 matrix multiply
-          C00 <= A0 * B0 + A1 * B2;
-          C01 <= A0 * B1 + A1 * B3;
-          C10 <= A2 * B0 + A3 * B2;
-          C11 <= A2 * B1 + A3 * B3;
+          // Compute matrix multiplication: C = A * B
+          // C00 = A00*B00 + A01*B10
+          C[0] <= A[0] * B[0] + A[1] * B[2];
+          // C01 = A00*B01 + A01*B11
+          C[1] <= A[0] * B[1] + A[1] * B[3];
+          // C10 = A10*B00 + A11*B10
+          C[2] <= A[2] * B[0] + A[3] * B[2];
+          // C11 = A10*B01 + A11*B11
+          C[3] <= A[2] * B[1] + A[3] * B[3];
+          
           state <= STATE_OUTPUT;
-          counter <= 0;
-          nibble_counter <= 0;
+          output_counter <= 0;
+          $display("STATE_COMPUTE: Matrix multiplication complete, moving to STATE_OUTPUT");
         end
         
-        // Output each cell over successive clock cycles (4 bits at a time)
         STATE_OUTPUT: begin
-          // Set output enable since we're sending data back
+          // Set output enable
           qspi_io_oe <= 4'b1111;
           
-          if (qspi_clk_negedge) begin
-            case (counter)
-              0: begin
-                if (nibble_counter == 0) begin
-                  qspi_io_out <= C00[7:4];
-                  nibble_counter <= 1;
-                end else begin
-                  qspi_io_out <= C00[3:0];
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
+          if (qspi_clk_posedge) begin
+            if (!nibble_flag) begin
+              // Output high nibble
+              qspi_io_out <= C[output_counter][7:4];
+              nibble_flag <= 1;
+              $display("STATE_OUTPUT: Sending high nibble %h of C[%d]", C[output_counter][7:4], output_counter);
+            end else begin
+              // Output low nibble
+              qspi_io_out <= C[output_counter][3:0];
+              nibble_flag <= 0;
+              $display("STATE_OUTPUT: Sending low nibble %h of C[%d]", C[output_counter][3:0], output_counter);
+              
+              // Move to next result element
+              if (output_counter == 3) begin
+                state <= STATE_IDLE;
+                $display("STATE_OUTPUT: Matrix C output complete, moving to STATE_IDLE");
+              end else begin
+                output_counter <= output_counter + 1;
               end
-              1: begin
-                if (nibble_counter == 0) begin
-                  qspi_io_out <= C01[7:4];
-                  nibble_counter <= 1;
-                end else begin
-                  qspi_io_out <= C01[3:0];
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              2: begin
-                if (nibble_counter == 0) begin
-                  qspi_io_out <= C10[7:4];
-                  nibble_counter <= 1;
-                end else begin
-                  qspi_io_out <= C10[3:0];
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              3: begin
-                if (nibble_counter == 0) begin
-                  qspi_io_out <= C11[7:4];
-                  nibble_counter <= 1;
-                end else begin
-                  qspi_io_out <= C11[3:0];
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                  state <= STATE_IDLE;
-                end
-              end
-            endcase
+            end
+          end
+          
+          // If CS goes inactive, return to IDLE
+          if (qspi_cs_n) begin
+            state <= STATE_IDLE;
+            $display("STATE_OUTPUT: CS deasserted, moving to STATE_IDLE");
           end
         end
         
-        default: state <= STATE_IDLE;
+        // default: state <= STATE_IDLE;
       endcase
-      
-      // If CS goes high at any point, return to idle
-      if (qspi_cs_n) begin
-        state <= STATE_IDLE;
-        qspi_io_oe <= 4'b0000;
-      end
     end
   end
 
   // List all unused input signals to prevent warnings
-  wire _unused = &{ena, ui_in[7:6]};
+  wire _unused = &{ena, ui_in[7:6], uio_in};
 
 endmodule
