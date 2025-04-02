@@ -1,23 +1,14 @@
 /*
- * tt_um_rte_sine_synth_wrapper.v
+ * tt_um_rte_sine_synth_wrapper.v - Modified for consistent clocking
  *
  * Wrapper for Arty A7 board around the
- * TinyTapeout project tt_um_rte_sine_synth.v
+ * TinyTapeout project tt_um_qspi_matrix_mult.v
  *
- * What this wrapper adds:
- *
- * (1) Divide-by-2 on the clock to match the TinyTapeout
- *     development board running at 50MHz
- * (2) Bidirectional pin handling
- *
+ * Changes:
+ * (1) Removed clock halving. Project runs at full system clock speed.
+ * (2) Simplified reset handling (project uses active-low directly).
+ * (3) Retained bidirectional pin handling.
  */
-
-// Point this to the Tiny Tapeout project and uncomment
-// `include "../src/tt_um_project.v"
-
-// Note that this creates new signal name "uio_inout" which is
-// what must be connected to the eight pins in the "JB" PMOD
-// in the Arty board configuration file.
 
 module tt_generic_wrapper (
     input  wire [7:0] ui_in,    // Dedicated inputs
@@ -27,22 +18,21 @@ module tt_generic_wrapper (
     input  wire       rst_n     // reset - low to reset
 );
 
-    reg clk2;
-
     wire [7:0] uio_oe;
     wire [7:0] uio_in;
     wire [7:0] uio_out;
 
     // Instantiate the Tiny Tapeout project
-
+    // ** Connect clk directly, remove clk2 **
+    // ** Connect rst_n directly **
     tt_um_qspi_matrix_mult project (
-	.ui_in(ui_in),		// 8-bit input
-	.uo_out(uo_out),	// 8-bit output
-	.uio_in(uio_in),	// 8-bit bidirectional (in)
-	.uio_out(uio_out),	// 8-bit bidirectional (out)
-	.uio_oe(uio_oe),	// 8-bit bidirectional (enable)
-	.clk(clk2),		// halved clock
-	.rst_n(rst_n)		// inverted reset
+        .ui_in(ui_in),		// 8-bit input
+        .uo_out(uo_out),	// 8-bit output
+        .uio_in(uio_in),	// 8-bit bidirectional (in)
+        .uio_out(uio_out),	// 8-bit bidirectional (out)
+        .uio_oe(uio_oe),	// 8-bit bidirectional (enable)
+        .clk(clk),		    // Use the main clock
+        .rst_n(rst_n)		// Pass reset directly
     );
 
     // Handle bidirectional I/Os
@@ -53,15 +43,6 @@ module tt_generic_wrapper (
     endgenerate
     assign uio_in = uio_inout;
 
-    // Invert reset to project, and halve the clock
-
-    always @(posedge clk) begin
-	if (rst_n) begin
-	    clk2 <= ~clk2;
-	end else begin
-	    clk2 <= 0;
-	end
-    end
+    // ** Remove clock halving and reset inversion logic **
 
 endmodule;
-
