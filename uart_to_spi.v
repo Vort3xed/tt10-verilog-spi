@@ -76,13 +76,14 @@ module uart_to_spi (
     reg [2:0] send_state;
     reg [3:0] send_bitcnt;
     reg [15:0] send_divcnt;
-    reg [7:0] send_buf_data;
+    reg [7:0] send_buf_data;    // Data to send from UART to SPI
+    reg [7:0] spi_recv_buf_data; // Data received from SPI to send back to UART
 
     // Registers for sending return SPI data back to the FTDI UART
-    reg retn_bit;
-    reg retn_active;
+    // reg retn_bit; // No longer needed, directly build spi_recv_buf_data
+    reg retn_active; // Flag to indicate a byte was received via SPI
     reg [1:0] retn_state;
-    reg [9:0] retn_pattern;
+    reg [9:0] retn_pattern; // UART transmit shift register (Start + 8 data + Stop)
     reg [3:0] retn_bitcnt;
     reg [15:0] retn_divcnt;
 
@@ -160,7 +161,8 @@ module uart_to_spi (
 	    send_state <= 0;
 	    send_bitcnt <= 0;
 	    send_buf_data <= 0;
-	    retn_bit <= 0;
+	    spi_recv_buf_data <= 0;
+	    // retn_bit <= 0;
 	    spi_csb <= 1;
 	    spi_sck <= 0;
 	    spi_sdi <= 0;
@@ -190,26 +192,32 @@ module uart_to_spi (
 		end
 		2: begin
 		    send_divcnt <= send_divcnt + 1;
+		    // Raise SCK (data should be stable on SDI)
 		    if (2*send_divcnt > cfg_divider) begin
-		        send_buf_data <= {send_buf_data[6:0], 1'b0};
 		        spi_sck <= 1;
-			retn_bit <= spi_sdo;
-			send_divcnt <= 0;
+			    // Sample SDO on rising edge
+			    // Store incoming bit into MSB position of spi_recv_buf_data
+                // Shift left and place new bit in LSB position to receive MSB first
+			    spi_recv_buf_data <= {spi_recv_buf_data[6:0], spi_sdo};
+			    send_divcnt <= 0;
 		        send_bitcnt <= send_bitcnt + 1;
-			send_state <= 3;
+			    send_state <= 3;
 		    end
 		end
 		3: begin
+		    // Lower SCK
 		    send_divcnt <= send_divcnt + 1;
 		    if (2*send_divcnt > cfg_divider) begin
-			spi_sck <= 0;
-		        send_buf_data[0] <= retn_bit;
-			spi_sdi <= send_buf_data[7];
-			send_divcnt <= 0;
-			if (send_bitcnt == 8) begin
-			    send_state <= 4;
-			end else begin
-			    send_state <= 2;
+			    spi_sck <= 0;
+			    // Shift out next SDI bit (MSB first)
+			    send_buf_data <= {send_buf_data[6:0], 1'b0}; // Shift left, LSB doesn't matter now
+			    spi_sdi <= send_buf_data[7]; // Prepare next bit for rising edge
+			    send_divcnt <= 0;
+			    if (send_bitcnt == 8) begin // Byte transfer complete
+			        send_state <= 4;
+                    retn_active <= 1; // Signal that a byte was received via SPI
+			    end else begin
+			        send_state <= 2; // Go back to prepare next bit
 			end
 		    end
 		end
@@ -233,12 +241,15 @@ module uart_to_spi (
 		retn_active <= 1;
 	    end
 	    case (retn_state)
-		0: begin
+		0: begin // Wait for SPI receive completion
 		    if (retn_active == 1) begin
-		        retn_pattern <= {1'b1, send_buf_data, 1'b0};
-		        retn_bitcnt <= 10;
+                // Construct UART frame: Stop bit (1), Received SPI data (LSB first), Start bit (0)
+                // Need to reverse spi_recv_buf_data bits for UART LSB-first format
+                wire [7:0] reversed_spi_recv = {spi_recv_buf_data[0], spi_recv_buf_data[1], spi_recv_buf_data[2], spi_recv_buf_data[3], spi_recv_buf_data[4], spi_recv_buf_data[5], spi_recv_buf_data[6], spi_recv_buf_data[7]};
+		        retn_pattern <= {1'b1, reversed_spi_recv, 1'b0}; // Stop, Data (Reversed), Start
+		        retn_bitcnt <= 10; // 1 start, 8 data, 1 stop
 		        retn_divcnt <= 0;
-		        retn_state <= 1;
+		        retn_state <= 1; // Start sending UART byte
 			retn_active <= 0;
 		    end
 		end

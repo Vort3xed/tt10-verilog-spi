@@ -33,16 +33,16 @@ module tt_generic_wrapper (
     wire [7:0] uio_in;
     wire [7:0] uio_out;
 
-    // Instantiate the Tiny Tapeout project
+    // Instantiate the Tiny Tapeout project (using standard SPI version)
 
-    tt_um_qspi_matrix_mult project (
-	.ui_in(ui_in),		// 8-bit input
-	.uo_out(uo_out),	// 8-bit output
-	.uio_in(uio_in),	// 8-bit bidirectional (in)
-	.uio_out(uio_out),	// 8-bit bidirectional (out)
-	.uio_oe(uio_oe),	// 8-bit bidirectional (enable)
-	.clk(clk2),		// halved clock
-	.rst_n(rst_n)		// inverted reset
+    tt_um_spi_matrix_mult project (
+	.ui_in(ui_in),		// 8-bit input (contains SPI signals)
+	.uo_out(uo_out),	// 8-bit output (contains SPI SDO)
+	.uio_in(uio_in),	// 8-bit bidirectional (in) - Unused by SPI project
+	.uio_out(uio_out),	// 8-bit bidirectional (out) - Unused by SPI project
+	.uio_oe(uio_oe),	// 8-bit bidirectional (enable) - Unused by SPI project
+	.clk(clk2),		    // halved clock (system clock for the project)
+	.rst_n(rst_n)		// active low reset
     );
 
     // Handle bidirectional I/Os
@@ -64,4 +64,3 @@ module tt_generic_wrapper (
     end
 
 endmodule;
-

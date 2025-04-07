@@ -11,3 +11,4 @@ test/results.xml
 test/gate_level_netlist.v
 test/venv
 test/winvenv
+.env

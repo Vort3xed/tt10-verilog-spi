@@ -27,8 +27,8 @@ module tb ();
   wire VGND = 1'b0;
 `endif
 
-  // Replace tt_um_example with your module name:
-  tt_um_qspi_matrix_mult user_project (
+  // Instantiate the standard SPI matrix multiplier module:
+  tt_um_spi_matrix_mult user_project (
 
       // Include power ports for the Gate Level test:
 `ifdef GL_TEST
