@@ -41,7 +41,7 @@ module tt_generic_wrapper (
 	.uio_in(uio_in),	// 8-bit bidirectional (in)
 	.uio_out(uio_out),	// 8-bit bidirectional (out)
 	.uio_oe(uio_oe),	// 8-bit bidirectional (enable)
-	.clk(clk2),		// halved clock
+	.clk(clk2),		    // halved clock
 	.rst_n(rst_n)		// inverted reset
     );
 
