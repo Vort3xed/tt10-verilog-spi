@@ -27,8 +27,8 @@ module tb ();
   wire VGND = 1'b0;
 `endif
 
-  // Replace tt_um_example with your module name:
-  tt_um_qspi_matrix_mult user_project (
+  // Replace with the SPI module name:
+  tt_um_spi_matrix_mult user_project (
 
       // Include power ports for the Gate Level test:
 `ifdef GL_TEST
@@ -36,8 +36,8 @@ module tb ();
       .VGND(VGND),
 `endif
 
-      .ui_in  (ui_in),    // Dedicated inputs
-      .uo_out (uo_out),   // Dedicated outputs
+      .ui_in  (ui_in),    // Dedicated inputs - [0]=MOSI, [1]=CS, [2]=SCK
+      .uo_out (uo_out),   // Dedicated outputs - [0]=MISO
       .uio_in (uio_in),   // IOs: Input path
       .uio_out(uio_out),  // IOs: Output path
       .uio_oe (uio_oe),   // IOs: Enable path (active high: 0=input, 1=output)

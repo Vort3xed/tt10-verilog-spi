@@ -5,244 +5,191 @@
 
 `default_nettype none
 
-module tt_um_qspi_matrix_mult (
-    input  wire [7:0] ui_in,    // [3:0] = qspi_io_in, [4] = qspi_cs_n, [5] = qspi_clk
-    output wire [7:0] uo_out,   // [3:0] = qspi_io_out
+module tt_um_spi_matrix_mult (
+    input  wire [7:0] ui_in,    // [0] = spi_mosi, [1] = spi_cs_n, [2] = spi_clk
+    output wire [7:0] uo_out,   // [0] = spi_miso
     input  wire [7:0] uio_in,   
     output wire [7:0] uio_out,  
-    output wire [7:0] uio_oe,   // Output enable for QSPI bidirectional pins
+    output wire [7:0] uio_oe,   
     input  wire       ena,      // Always 1 when design is powered
     input  wire       clk,      // System clock
     input  wire       rst_n     // Active-low reset
 );
 
-  // Extract QSPI signals from input pins
-  wire [3:0] qspi_io_in = ui_in[3:0];
-  wire qspi_cs_n = ui_in[4];
-  wire qspi_clk = ui_in[5];
+  // Extract SPI signals from input pins
+  wire spi_mosi = ui_in[0];
+  wire spi_cs_n = ui_in[1];
+  wire spi_clk = ui_in[2];
   
-  // Drive only the lower 4 bits for QSPI IO output
-  reg [3:0] qspi_io_out;
-  assign uo_out = {4'b0000, qspi_io_out};
+  // Drive MISO output
+  reg spi_miso;
+  assign uo_out = {7'b0000000, spi_miso};
   
-  // Output enable (active during transmission)
-  reg [3:0] qspi_io_oe;
-  assign uio_oe = {4'b0000, qspi_io_oe};
+  // All bidirectional pins are inputs
+  assign uio_oe = 8'b00000000;
+  assign uio_out = 8'b00000000;
   
   // Internal state definitions
   localparam STATE_IDLE = 3'd0,
              STATE_READ_A = 3'd1,
              STATE_READ_B = 3'd2, 
              STATE_COMPUTE = 3'd3,
-             STATE_OUTPUT = 3'd4;
+             STATE_PREPARE_OUTPUT = 3'd4,
+             STATE_OUTPUT = 3'd5;
 
   // Registers for state machine and data
   reg [2:0] state;
-  reg [2:0] counter;
-  reg [2:0] nibble_counter; // Tracks which 4-bit part we're processing
+  reg [2:0] counter;      // Element counter (0-3)
+  reg [2:0] bit_counter;  // Bit position counter (0-7)
   
   // Matrix storage (8-bit values)
   reg [7:0] A0, A1, A2, A3;   // Elements for matrix A
   reg [7:0] B0, B1, B2, B3;   // Elements for matrix B
   reg [15:0] C00, C01, C10, C11; // Full-precision intermediate products
   
-  // Temporary registers for storing half-bytes during input
-  reg [3:0] nibble_buffer;
+  // Shift register for input/output
+  reg [7:0] shift_reg;
   
-  // QSPI clock edge detection
-  reg qspi_clk_prev;
-  wire qspi_clk_posedge = qspi_clk && !qspi_clk_prev;
-  wire qspi_clk_negedge = !qspi_clk && qspi_clk_prev;
+  // SPI clock edge detection
+  reg spi_clk_prev;
+  wire spi_clk_posedge = spi_clk && !spi_clk_prev;
+  wire spi_clk_negedge = !spi_clk && spi_clk_prev;
   
   // Sequential logic
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       state <= STATE_IDLE;
       counter <= 0;
-      nibble_counter <= 0;
+      bit_counter <= 0;
       A0 <= 0; A1 <= 0; A2 <= 0; A3 <= 0;
       B0 <= 0; B1 <= 0; B2 <= 0; B3 <= 0;
       C00 <= 0; C01 <= 0; C10 <= 0; C11 <= 0;
-      qspi_io_out <= 4'b0000;
-      qspi_io_oe <= 4'b0000;
-      qspi_clk_prev <= 0;
-      nibble_buffer <= 0;
+      spi_miso <= 0;
+      spi_clk_prev <= 0;
+      shift_reg <= 0;
     end else begin
       // Update previous clock for edge detection
-      qspi_clk_prev <= qspi_clk;
-      
-      // Default OE to off unless explicitly set
-      qspi_io_oe <= 4'b0000;
+      spi_clk_prev <= spi_clk;
       
       case (state)
         // Wait for CS to go low to begin transaction
         STATE_IDLE: begin
-          if (!qspi_cs_n) begin
+          if (!spi_cs_n) begin
             state <= STATE_READ_A;
             counter <= 0;
-            nibble_counter <= 0;
+            bit_counter <= 7; // Start with MSB
           end
         end
         
-        // Read matrix A (4 bits at a time)
+        // Read matrix A (1 bit at a time)
         STATE_READ_A: begin
-          if (qspi_clk_posedge) begin
-            case (counter)
-              0: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  A0 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
+          if (spi_clk_posedge) begin
+            // Shift in MOSI data
+            shift_reg <= {shift_reg[6:0], spi_mosi};
+            
+            if (bit_counter == 0) begin
+              // We've received a full byte
+              bit_counter <= 7;
+              
+              case (counter)
+                0: begin A0 <= {shift_reg[6:0], spi_mosi}; counter <= counter + 1; end
+                1: begin A1 <= {shift_reg[6:0], spi_mosi}; counter <= counter + 1; end
+                2: begin A2 <= {shift_reg[6:0], spi_mosi}; counter <= counter + 1; end
+                3: begin 
+                   A3 <= {shift_reg[6:0], spi_mosi}; 
+                   counter <= 0;
+                   state <= STATE_READ_B;
                 end
-              end
-              1: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  A1 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              2: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  A2 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              3: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  A3 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= 0;
-                  state <= STATE_READ_B;
-                end
-              end
-            endcase
+              endcase
+            end else begin
+              bit_counter <= bit_counter - 1;
+            end
           end
         end
         
-        // Read matrix B (4 bits at a time)
+        // Read matrix B (1 bit at a time)
         STATE_READ_B: begin
-          if (qspi_clk_posedge) begin
-            case (counter)
-              0: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  B0 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
+          if (spi_clk_posedge) begin
+            // Shift in MOSI data
+            shift_reg <= {shift_reg[6:0], spi_mosi};
+            
+            if (bit_counter == 0) begin
+              // We've received a full byte
+              bit_counter <= 7;
+              
+              case (counter)
+                0: begin B0 <= {shift_reg[6:0], spi_mosi}; counter <= counter + 1; end
+                1: begin B1 <= {shift_reg[6:0], spi_mosi}; counter <= counter + 1; end
+                2: begin B2 <= {shift_reg[6:0], spi_mosi}; counter <= counter + 1; end
+                3: begin 
+                   B3 <= {shift_reg[6:0], spi_mosi}; 
+                   counter <= 0;
+                   state <= STATE_COMPUTE;
                 end
-              end
-              1: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  B1 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              2: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  B2 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                end
-              end
-              3: begin
-                if (nibble_counter == 0) begin
-                  nibble_buffer <= qspi_io_in;
-                  nibble_counter <= 1;
-                end else begin
-                  B3 <= {nibble_buffer, qspi_io_in};
-                  nibble_counter <= 0;
-                  counter <= 0;
-                  state <= STATE_COMPUTE;
-                end
-              end
-            endcase
+              endcase
+            end else begin
+              bit_counter <= bit_counter - 1;
+            end
           end
         end
         
-        // Compute matrix multiplication
+        // Compute matrix multiplication 
         STATE_COMPUTE: begin
           // Standard 2x2 matrix multiply
           C00 <= A0 * B0 + A1 * B2;
           C01 <= A0 * B1 + A1 * B3;
           C10 <= A2 * B0 + A3 * B2;
           C11 <= A2 * B1 + A3 * B3;
-          state <= STATE_OUTPUT;
-          counter <= 0;
-          nibble_counter <= 0;
+          state <= STATE_PREPARE_OUTPUT;
         end
         
-        // Output each cell over successive clock cycles (4 bits at a time)
-        STATE_OUTPUT: begin
-          // Set output enable since we're sending data back
-          qspi_io_oe <= 4'b1111;
+        // Prepare output - ensure C00 is ready before starting SPI transfer
+        STATE_PREPARE_OUTPUT: begin
+          counter <= 0;
+          bit_counter <= 7;
           
-          if (qspi_clk_negedge) begin
-            case (counter)
-              0: begin
-                if (nibble_counter == 0) begin
-                  qspi_io_out <= C00[7:4];
-                  nibble_counter <= 1;
-                end else begin
-                  qspi_io_out <= C00[3:0];
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
+          // Load C00 into the shift register and preload first bit
+          shift_reg <= C00[7:0];
+          spi_miso <= C00[7];
+          state <= STATE_OUTPUT;
+        end
+        
+        // Output results
+        STATE_OUTPUT: begin
+          // On falling edge, prepare the next bit for the upcoming rising edge
+          if (spi_clk_negedge) begin
+            if (bit_counter == 0) begin
+              // Prepare for next byte
+              bit_counter <= 7;
+              
+              case (counter)
+                0: begin 
+                   shift_reg <= C01[7:0]; 
+                   counter <= counter + 1;
+                   spi_miso <= C01[7]; // Preload first bit of next byte
                 end
-              end
-              1: begin
-                if (nibble_counter == 0) begin
-                  qspi_io_out <= C01[7:4];
-                  nibble_counter <= 1;
-                end else begin
-                  qspi_io_out <= C01[3:0];
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
+                1: begin 
+                   shift_reg <= C10[7:0]; 
+                   counter <= counter + 1;
+                   spi_miso <= C10[7]; // Preload first bit of next byte
                 end
-              end
-              2: begin
-                if (nibble_counter == 0) begin
-                  qspi_io_out <= C10[7:4];
-                  nibble_counter <= 1;
-                end else begin
-                  qspi_io_out <= C10[3:0];
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
+                2: begin 
+                   shift_reg <= C11[7:0]; 
+                   counter <= counter + 1;
+                   spi_miso <= C11[7]; // Preload first bit of next byte
                 end
-              end
-              3: begin
-                if (nibble_counter == 0) begin
-                  qspi_io_out <= C11[7:4];
-                  nibble_counter <= 1;
-                end else begin
-                  qspi_io_out <= C11[3:0];
-                  nibble_counter <= 0;
-                  counter <= counter + 1;
-                  state <= STATE_IDLE;
+                3: begin 
+                   shift_reg <= 8'h00; 
+                   counter <= 0;
+                   state <= STATE_IDLE;
+                   spi_miso <= 0; // Clear MISO when finished
                 end
-              end
-            endcase
+              endcase
+            end else begin
+              // Prepare next bit
+              bit_counter <= bit_counter - 1;
+              spi_miso <= shift_reg[bit_counter - 1];
+            end
           end
         end
         
@@ -250,14 +197,14 @@ module tt_um_qspi_matrix_mult (
       endcase
       
       // If CS goes high at any point, return to idle
-      if (qspi_cs_n) begin
+      if (spi_cs_n) begin
         state <= STATE_IDLE;
-        qspi_io_oe <= 4'b0000;
+        spi_miso <= 0;
       end
     end
   end
 
   // List all unused input signals to prevent warnings
-  wire _unused = &{ena, ui_in[7:6]};
+  wire _unused = &{ena, ui_in[7:3], uio_in};
 
 endmodule
