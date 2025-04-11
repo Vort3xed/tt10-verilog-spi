@@ -23,313 +23,262 @@ module uart_to_spi (
     // UART baud rate divider (96 kbps @ 100 MHz clock)
     localparam UART_DIV = 1042;
     
-    // SPI bit rate divider (slower than UART for stability)
-    localparam SPI_DIV = 40;
+    // SPI bit rate divider (slower than UART to ensure stability)
+    localparam SPI_DIV = 20;
     
-    // UART RX/TX modes
-    localparam DATA_BITS = 8;
-    localparam LSB_FIRST = 1;
+    // States for state machines
+    localparam IDLE         = 0;
+    localparam UART_START   = 1;
+    localparam UART_DATA    = 2;
+    localparam UART_STOP    = 3;
+    localparam SPI_START    = 4;
+    localparam SPI_XFER     = 5;
+    localparam SPI_END      = 6;
+    localparam TX_START     = 7;
+    localparam TX_DATA      = 8;
+    localparam TX_STOP      = 9;
+    localparam RESULT_READ  = 10;  // New state for reading results
     
-    // States for the main state machine
-    localparam IDLE             = 0;
-    localparam RX_START_BIT     = 1;
-    localparam RX_DATA_BITS     = 2;
-    localparam RX_STOP_BIT      = 3;
-    localparam TX_START_BIT     = 4;
-    localparam TX_DATA_BITS     = 5;
-    localparam TX_STOP_BIT      = 6;
-    localparam SPI_START        = 7;
-    localparam SPI_TX_BIT       = 8;
-    localparam SPI_RX_BIT       = 9;
-    localparam SPI_WAIT_FOR_RESULTS = 10;
+    // State and counters
+    reg [3:0] state;
+    reg [15:0] clock_div;
+    reg [2:0] bit_count;
     
-    // Main state and counters
-    reg [3:0] state = IDLE;
-    reg [15:0] divider_counter = 0;
-    reg [3:0] bit_counter = 0;
-    reg [3:0] byte_counter = 0;
+    // Data registers
+    reg [7:0] rx_data;      // Data received from UART
+    reg [7:0] tx_data;      // Data to transmit via UART
+    reg [7:0] spi_tx_data;  // Data to send via SPI
+    reg [7:0] spi_rx_data;  // Data received from SPI
     
-    // Data buffers
-    reg [7:0] uart_rx_data;
-    reg [7:0] uart_tx_data;
-    reg [7:0] spi_tx_data;
-    reg [7:0] spi_rx_data;
+    // Result storage buffer
+    reg [7:0] result_buf[0:3]; // Store 4 result bytes
     
-    // Matrix data storage
-    reg [7:0] matrix_A[0:3];
-    reg [7:0] matrix_B[0:3];
-    reg [7:0] results[0:3];
+    // Timeout counter for CS assertion
+    reg [15:0] timeout_counter;
     
-    // Control flags
-    reg all_data_received = 0;    // Set when all input matrices received
-    reg compute_done = 0;         // Set when computation is complete
-    reg results_ready = 0;        // Set when results are available
-    reg wait_for_response = 0;    // Set when waiting for matrix module response
+    // Matrix transaction phase tracking
+    reg [2:0] byte_counter;    // Input matrix bytes (0-7)
+    reg [1:0] result_counter;  // Output result bytes (0-3)
+    reg results_pending;       // Flag indicating results are ready to be read
+    reg input_complete;        // Flag indicating all input bytes are sent
     
     // Edge detection for UART RX
-    reg uart_rx_prev;
-    wire uart_rx_negedge = uart_rx_prev && !uart_rx;
+    reg ser_rx_prev;
+    wire ser_rx_negedge = !ser_rx && ser_rx_prev;
     
-    // Unused outputs
-    assign mgmt_uart_rx = 1'b0;
-
+    // Unused signals
+    assign mgmt_uart_rx = ser_rx;
+    
     always @(posedge clk or negedge resetn) begin
         if (!resetn) begin
-            // Reset all states and signals
             state <= IDLE;
-            divider_counter <= 0;
-            bit_counter <= 0;
-            byte_counter <= 0;
-            
-            uart_rx_data <= 0;
-            uart_tx_data <= 0;
+            clock_div <= 0;
+            bit_count <= 0;
+            rx_data <= 0;
+            tx_data <= 0;
             spi_tx_data <= 0;
             spi_rx_data <= 0;
+            spi_csb <= 1;
+            spi_sck <= 0;
+            spi_sdi <= 0;
+            ser_tx <= 1;
+            timeout_counter <= 0;
+            byte_counter <= 0;
+            result_counter <= 0;
+            results_pending <= 0;
+            input_complete <= 0;
+            ser_rx_prev <= 1;
             
-            spi_csb <= 1;  // Deselect chip
-            spi_sck <= 0;  // Clock low
-            spi_sdi <= 0;  // Data line low
-            ser_tx <= 1;   // UART idle high
-            
-            uart_rx_prev <= 1;
-            
-            all_data_received <= 0;
-            compute_done <= 0;
-            results_ready <= 0;
-            wait_for_response <= 0;
+            // Clear result buffer
+            result_buf[0] <= 0;
+            result_buf[1] <= 0;
+            result_buf[2] <= 0;
+            result_buf[3] <= 0;
         end else begin
             // Update edge detector
-            uart_rx_prev <= uart_rx;
+            ser_rx_prev <= ser_rx;
             
-            // Default decrement for counter
-            if (divider_counter > 0) begin
-                divider_counter <= divider_counter - 1;
-            end
+            // Default decrements
+            if (clock_div > 0) clock_div <= clock_div - 1;
+            if (timeout_counter > 0) timeout_counter <= timeout_counter - 1;
             
             case (state)
                 IDLE: begin
-                    // Default inactive states
-                    spi_sck <= 0;
+                    // Look for UART start bit
+                    if (ser_rx_negedge) begin
+                        clock_div <= UART_DIV / 2; // Sample in middle of bit
+                        state <= UART_START;
+                    end
                     
-                    if (!all_data_received && uart_rx_negedge) begin
-                        // Start receiving UART byte
-                        state <= RX_START_BIT;
-                        divider_counter <= UART_DIV / 2;  // Sample middle of bit
+                    // Keep CS high when idle unless in the middle of transaction
+                    if (timeout_counter == 0) begin
+                        spi_csb <= 1;
                     end
-                    else if (all_data_received && !compute_done) begin
-                        // After all data is received, trigger SPI transaction
-                        state <= SPI_START;
-                        byte_counter <= 0;  // Start with first matrix element
-                    end
-                    else if (compute_done && !results_ready) begin
-                        // After computation, read results
-                        state <= SPI_START;
-                        byte_counter <= 0;  // Reset counter for reading results
-                        wait_for_response <= 1;
-                    end
-                    else if (results_ready) begin
-                        // Send results back over UART
-                        uart_tx_data <= results[byte_counter];
-                        state <= TX_START_BIT;
+                    
+                    // If results are ready to send via UART
+                    if (results_pending && result_counter < 4) begin
+                        tx_data <= result_buf[result_counter];
+                        state <= TX_START;
                     end
                 end
                 
-                //------------------------------------------
                 // UART Receive States
-                //------------------------------------------
-                RX_START_BIT: begin
-                    if (divider_counter == 0) begin
-                        // Verify this is a valid start bit
-                        if (uart_rx == 0) begin
-                            divider_counter <= UART_DIV;
-                            bit_counter <= 0;
-                            state <= RX_DATA_BITS;
-                            uart_rx_data <= 0;  // Clear data register
+                UART_START: begin
+                    if (clock_div == 0) begin
+                        // Confirm this is a start bit
+                        if (ser_rx == 0) begin
+                            clock_div <= UART_DIV;
+                            bit_count <= 0;
+                            state <= UART_DATA;
                         end else begin
-                            state <= IDLE;  // Not a valid start bit
-                        end
-                    end
-                end
-                
-                RX_DATA_BITS: begin
-                    if (divider_counter == 0) begin
-                        // Sample data bit
-                        if (LSB_FIRST) begin
-                            uart_rx_data <= {uart_rx, uart_rx_data[7:1]};  // LSB first
-                        end else begin
-                            uart_rx_data <= {uart_rx_data[6:0], uart_rx};  // MSB first
-                        end
-                        
-                        bit_counter <= bit_counter + 1;
-                        divider_counter <= UART_DIV;
-                        
-                        if (bit_counter == DATA_BITS-1) begin
-                            state <= RX_STOP_BIT;
-                        end
-                    end
-                end
-                
-                RX_STOP_BIT: begin
-                    if (divider_counter == 0) begin
-                        // Check stop bit
-                        if (uart_rx == 1) begin
-                            // Store received data
-                            if (byte_counter < 4) begin
-                                // Matrix A data
-                                matrix_A[byte_counter] <= uart_rx_data;
-                            end else if (byte_counter < 8) begin
-                                // Matrix B data
-                                matrix_B[byte_counter-4] <= uart_rx_data;
-                            end
-                            
-                            byte_counter <= byte_counter + 1;
-                            
-                            if (byte_counter == 7) begin
-                                // All matrix data received
-                                all_data_received <= 1;
-                            end
-                            
                             state <= IDLE;
-                        end else begin
-                            state <= IDLE;  // Framing error, discard
                         end
                     end
                 end
                 
-                //------------------------------------------
-                // SPI Data Transfer States
-                //------------------------------------------
+                UART_DATA: begin
+                    if (clock_div == 0) begin
+                        // Sample data bits (LSB first for UART)
+                        rx_data <= {ser_rx, rx_data[7:1]};
+                        bit_count <= bit_count + 1;
+                        clock_div <= UART_DIV;
+                        
+                        if (bit_count == 7) begin
+                            state <= UART_STOP;
+                        end
+                    end
+                end
+                
+                UART_STOP: begin
+                    if (clock_div == 0) begin
+                        // Check for stop bit
+                        if (ser_rx == 1) begin
+                            // Valid byte received
+                            spi_tx_data <= rx_data;
+                            state <= SPI_START;
+                            // Start/reset timeout for CS assertion
+                            timeout_counter <= UART_DIV * 20;
+                        end else begin
+                            // Framing error, return to idle
+                            state <= IDLE;
+                        end
+                    end
+                end
+                
+                // SPI Transmit/Receive States
                 SPI_START: begin
                     // Start SPI transaction
-                    spi_csb <= 0;  // Select device
-                    spi_sck <= 0;  // Clock low
-                    
-                    // Select data to send based on state
-                    if (!compute_done) begin
-                        // Send input matrices
-                        if (byte_counter < 4) begin
-                            spi_tx_data <= matrix_A[byte_counter];
+                    spi_csb <= 0;
+                    spi_sck <= 0;
+                    bit_count <= 0;
+                    clock_div <= SPI_DIV;
+                    state <= SPI_XFER;
+                    spi_rx_data <= 0; // Clear receive buffer
+                end
+                
+                SPI_XFER: begin
+                    if (clock_div == 0) begin
+                        if (!spi_sck) begin
+                            // Prepare data bit (MSB first for SPI)
+                            spi_sdi <= spi_tx_data[7];
+                            spi_sck <= 1;
+                            clock_div <= SPI_DIV;
                         end else begin
-                            spi_tx_data <= matrix_B[byte_counter-4];
-                        end
-                    end
-                    
-                    bit_counter <= 0;
-                    divider_counter <= SPI_DIV;
-                    state <= SPI_TX_BIT;
-                    spi_rx_data <= 0;  // Clear receive register
-                end
-                
-                SPI_TX_BIT: begin
-                    if (divider_counter == 0) begin
-                        // Setup MSB first on MOSI
-                        spi_sdi <= spi_tx_data[7 - bit_counter];
-                        spi_sck <= 1;  // Clock high to sample
-                        divider_counter <= SPI_DIV;
-                        state <= SPI_RX_BIT;
-                    end
-                end
-                
-                SPI_RX_BIT: begin
-                    if (divider_counter == 0) begin
-                        // Sample MISO on clock high
-                        if (wait_for_response) begin
-                            // Shift in MISO data MSB first
+                            // Sample incoming data
                             spi_rx_data <= {spi_rx_data[6:0], spi_sdo};
+                            spi_sck <= 0;
+                            spi_tx_data <= {spi_tx_data[6:0], 1'b0};
+                            bit_count <= bit_count + 1;
+                            clock_div <= SPI_DIV;
+                            
+                            if (bit_count == 7) begin
+                                state <= SPI_END;
+                            end
                         end
-                        
-                        spi_sck <= 0;  // Clock low
-                        divider_counter <= SPI_DIV;
-                        bit_counter <= bit_counter + 1;
-                        
-                        if (bit_counter == 7) begin
-                            // Byte complete
-                            if (!compute_done) begin
-                                // Sending matrix data
-                                if (byte_counter < 7) begin
-                                    byte_counter <= byte_counter + 1;
-                                    state <= SPI_START;  // Send next byte
-                                end else begin
-                                    // All data sent, wait for computation
-                                    spi_csb <= 0; // Keep CS low for reading
-                                    divider_counter <= UART_DIV * 10;  // Wait time
-                                    state <= SPI_WAIT_FOR_RESULTS;
-                                    compute_done <= 1;
-                                }
-                            end else if (wait_for_response) begin
-                                // Reading results
-                                results[byte_counter] <= spi_rx_data;
-                                
-                                if (byte_counter < 3) begin
-                                    byte_counter <= byte_counter + 1;
-                                    state <= SPI_START;  // Read next result
-                                end else begin
-                                    // All results read
-                                    spi_csb <= 1;  // Deselect chip
-                                    byte_counter <= 0;  // Reset for UART TX
-                                    results_ready <= 1;
-                                    wait_for_response <= 0;
-                                    state <= IDLE;
-                                }
+                    end
+                end
+                
+                SPI_END: begin
+                    if (clock_div == 0) begin
+                        if (!input_complete) begin
+                            // Still sending input matrices
+                            if (byte_counter < 7) begin
+                                byte_counter <= byte_counter + 1;
+                                state <= IDLE;
+                            end else begin
+                                // All matrix inputs sent, prepare to read results
+                                byte_counter <= 0;
+                                input_complete <= 1;
+                                // De-assert CS to allow computation
+                                spi_csb <= 1;
+                                // Allow time for calculation
+                                timeout_counter <= UART_DIV * 20;
+                                state <= RESULT_READ;
                             end
                         end else begin
-                            // Continue with next bit
-                            state <= SPI_TX_BIT;
+                            // Storing result bytes
+                            if (byte_counter < 4) begin
+                                result_buf[byte_counter] <= spi_rx_data;
+                                byte_counter <= byte_counter + 1;
+                                
+                                if (byte_counter == 3) begin
+                                    // All results collected
+                                    results_pending <= 1;
+                                    result_counter <= 0;
+                                    state <= IDLE;
+                                end else begin
+                                    // Prepare for next result byte
+                                    state <= SPI_START;
+                                end
+                            end
                         end
                     end
                 end
                 
-                SPI_WAIT_FOR_RESULTS: begin
-                    if (divider_counter == 0) begin
-                        // Computation time complete
-                        wait_for_response <= 1;
-                        state <= IDLE;  // Will trigger result reading
+                // Special state to start reading results
+                RESULT_READ: begin
+                    if (timeout_counter == 0) begin
+                        // Start reading results
+                        state <= SPI_START;
+                        spi_csb <= 0;
                     end
                 end
                 
-                //------------------------------------------
                 // UART Transmit States
-                //------------------------------------------
-                TX_START_BIT: begin
-                    // Send start bit (low)
+                TX_START: begin
+                    // Start bit
                     ser_tx <= 0;
-                    divider_counter <= UART_DIV;
-                    bit_counter <= 0;
-                    state <= TX_DATA_BITS;
+                    clock_div <= UART_DIV;
+                    bit_count <= 0;
+                    state <= TX_DATA;
                 end
                 
-                TX_DATA_BITS: begin
-                    if (divider_counter == 0) begin
-                        // Send data bits
-                        if (LSB_FIRST) begin
-                            ser_tx <= (uart_tx_data >> bit_counter) & 1;  // LSB first
-                        end else begin
-                            ser_tx <= (uart_tx_data >> (7 - bit_counter)) & 1;  // MSB first
-                        end
+                TX_DATA: begin
+                    if (clock_div == 0) begin
+                        // Send data bits (LSB first)
+                        ser_tx <= tx_data[bit_count];
+                        bit_count <= bit_count + 1;
+                        clock_div <= UART_DIV;
                         
-                        bit_counter <= bit_counter + 1;
-                        divider_counter <= UART_DIV;
-                        
-                        if (bit_counter == DATA_BITS-1) begin
-                            state <= TX_STOP_BIT;
+                        if (bit_count == 7) begin
+                            state <= TX_STOP;
                         end
                     end
                 end
                 
-                TX_STOP_BIT: begin
-                    if (divider_counter == 0) begin
-                        // Send stop bit (high)
+                TX_STOP: begin
+                    if (clock_div == 0) begin
+                        // Stop bit
                         ser_tx <= 1;
-                        divider_counter <= UART_DIV;
+                        clock_div <= UART_DIV;
                         
-                        byte_counter <= byte_counter + 1;
+                        // Increment result counter for next byte
+                        result_counter <= result_counter + 1;
                         
-                        if (byte_counter == 3) begin
-                            // All results sent, reset for next transaction
-                            all_data_received <= 0;
-                            compute_done <= 0;
-                            results_ready <= 0;
-                            wait_for_response <= 0;
+                        if (result_counter == 3) begin
+                            // All results sent, reset
+                            results_pending <= 0;
+                            input_complete <= 0;
                             byte_counter <= 0;
                         end
                         
