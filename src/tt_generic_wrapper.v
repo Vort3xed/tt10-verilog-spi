@@ -1,28 +1,20 @@
 /*
- * tt_um_rte_sine_synth_wrapper.v
+ * tt_generic_wrapper.v
  *
  * Wrapper for Arty A7 board around the
- * TinyTapeout project tt_um_rte_sine_synth.v
+ * TinyTapeout project tt_um_uart_matrix_mult
  *
  * What this wrapper adds:
  *
  * (1) Divide-by-2 on the clock to match the TinyTapeout
  *     development board running at 50MHz
- * (2) Bidirectional pin handling
  *
  */
 
-// Point this to the Tiny Tapeout project and uncomment
-// `include "../src/tt_um_project.v"
-
-// Note that this creates new signal name "uio_inout" which is
-// what must be connected to the eight pins in the "JB" PMOD
-// in the Arty board configuration file.
-
 module tt_generic_wrapper (
-    input  wire [7:0] ui_in,    // Dedicated inputs
-    output wire [7:0] uo_out,   // Dedicated outputs
-    inout  wire [7:0] uio_inout,// Bidirectional input and output
+    input  wire [7:0] ui_in,    // Dedicated inputs - ui_in[0] is UART RX
+    output wire [7:0] uo_out,   // Dedicated outputs - uo_out[0] is UART TX
+    inout  wire [7:0] uio_inout,// Bidirectional input and output (unused)
     input  wire       clk,      // clock
     input  wire       rst_n     // reset - low to reset
 );
@@ -34,15 +26,15 @@ module tt_generic_wrapper (
     wire [7:0] uio_out;
 
     // Instantiate the Tiny Tapeout project
-
-    tt_um_qspi_matrix_mult project (
-	.ui_in(ui_in),		// 8-bit input
-	.uo_out(uo_out),	// 8-bit output
-	.uio_in(uio_in),	// 8-bit bidirectional (in)
-	.uio_out(uio_out),	// 8-bit bidirectional (out)
-	.uio_oe(uio_oe),	// 8-bit bidirectional (enable)
-	.clk(clk2),		    // halved clock
-	.rst_n(rst_n)		// inverted reset
+    tt_um_uart_matrix_mult project (
+    .ui_in(ui_in),		// 8-bit input - ui_in[0] is UART RX
+    .uo_out(uo_out),	// 8-bit output - uo_out[0] is UART TX
+    .uio_in(uio_in),	// 8-bit bidirectional (in)
+    .uio_out(uio_out),	// 8-bit bidirectional (out)
+    .uio_oe(uio_oe),	// 8-bit bidirectional (enable)
+    .clk(clk2),		    // halved clock
+    .rst_n(rst_n),		// inverted reset
+    .ena(1'b1)          // always enabled
     );
 
     // Handle bidirectional I/Os
@@ -53,15 +45,13 @@ module tt_generic_wrapper (
     endgenerate
     assign uio_in = uio_inout;
 
-    // Invert reset to project, and halve the clock
-
+    // Divide clock by 2 to get 50MHz from 100MHz input
     always @(posedge clk) begin
-	if (rst_n) begin
-	    clk2 <= ~clk2;
-	end else begin
-	    clk2 <= 0;
-	end
+    if (rst_n) begin
+        clk2 <= ~clk2;
+    end else begin
+        clk2 <= 0;
+    end
     end
 
-endmodule;
-
+endmodule
